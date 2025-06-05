@@ -1,19 +1,31 @@
 #!/bin/bash
 
+echo "==== Real-Time Chat Server Auto Installer ===="
+
+# 1. Update system
 echo "Updating system..."
 sudo apt-get update
 
+# 2. Install Node.js
 echo "Installing Node.js..."
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
 sudo apt-get install -y nodejs git
 
+# 3. Install PM2 (process manager)
 echo "Installing PM2 (process manager)..."
 sudo npm install -g pm2
 
+# 4. Open port 3000 in firewall (UFW)
+echo "Opening port 3000 in firewall..."
+sudo ufw allow 3000
+sudo ufw reload
+
+# 5. Create chat-server directory
 echo "Creating chat-server directory..."
 mkdir -p ~/chat-server
 cd ~/chat-server
 
+# 6. Write server.js
 echo "Writing server.js..."
 cat << 'EOF' > server.js
 const express = require('express');
@@ -26,7 +38,7 @@ app.use(cors());
 app.use(express.json());
 
 let users = {}; // { socketId: {name, id} }
-let messages = {}; // { userId: [ {from, text, time} ] }
+let messages = {}; // { userId: [ {from, text, time, sender} ] }
 
 io.on('connection', (socket) => {
     let currentUser = null;
@@ -81,16 +93,27 @@ http.listen(3000, () => {
 });
 EOF
 
+# 7. Install Node.js modules
 echo "Installing Node.js modules..."
 npm init -y
 npm install express socket.io cors
 
+# 8. Start server with PM2
 echo "Starting server with PM2..."
 pm2 start server.js --name chat-server
 pm2 save
-pm2 startup
+
+# 9. PM2 startup for reboot persistence
+echo "Setting up PM2 to restart on reboot..."
+pm2 startup | tail -2 | head -1 | bash
 
 echo ""
-echo "ALL DONE! Your real-time chat server is running on port 3000."
-echo "You may need to open port 3000 on your DigitalOcean droplet firewall."
+echo "==== INSTALLATION COMPLETE! ===="
+echo "Your real-time chat server is now running on port 3000."
+echo "Access test: http://YOUR_SERVER_IP:3000"
 echo "To view logs: pm2 logs chat-server"
+echo "To stop:     pm2 stop chat-server"
+echo "To restart:  pm2 restart chat-server"
+echo "You can safely close SSH, server will run in background!"
+echo ""
+echo "If you want to change code, go to ~/chat-server and edit server.js"
