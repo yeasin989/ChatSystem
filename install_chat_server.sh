@@ -25,7 +25,7 @@ echo "Creating chat-server directory..."
 mkdir -p ~/chat-server
 cd ~/chat-server
 
-# 6. Write server.js (ES module version!)
+# 6. Write server.js with robust db.data handling
 echo "Writing server.js..."
 cat << 'EOF' > server.js
 import express from 'express';
@@ -62,18 +62,19 @@ function saveDB() {
 // --- Load from DB at startup ---
 (async () => {
     await db.read();
-    db.data ||= { messages: {}, users: [] };
-    messages = db.data.messages || {};
-    allUsers = db.data.users || [];
+    if (!db.data) db.data = { messages: {}, users: [] };
+
+    messages = db.data.messages;
+    allUsers = db.data.users;
 
     io.on('connection', (socket) => {
         let currentUser = null;
 
         socket.on('register', async (name) => {
-            // Reload from disk (handles concurrent writes)
             await db.read();
-            messages = db.data.messages || {};
-            allUsers = db.data.users || [];
+            if (!db.data) db.data = { messages: {}, users: [] };
+            messages = db.data.messages;
+            allUsers = db.data.users;
 
             currentUser = { id: socket.id, name: name || ("User" + Date.now()) };
             users[socket.id] = currentUser;
@@ -97,14 +98,24 @@ function saveDB() {
             socket.emit('chat_history', messages[currentUser.name]);
         });
 
-        socket.on('get_clients', () => {
+        socket.on('get_clients', async () => {
+            await db.read();
+            if (!db.data) db.data = { messages: {}, users: [] };
+            messages = db.data.messages;
+            allUsers = db.data.users;
+
             io.emit('update_clients', {
                 active: Object.values(users).map(u => u.name),
                 all: allUsers
             });
         });
 
-        socket.on('user_message', (msg) => {
+        socket.on('user_message', async (msg) => {
+            await db.read();
+            if (!db.data) db.data = { messages: {}, users: [] };
+            messages = db.data.messages;
+            allUsers = db.data.users;
+
             if (!currentUser) return;
             const message = { from: currentUser.name, text: msg, time: Date.now(), sender: "user" };
             if (!messages[currentUser.name]) messages[currentUser.name] = [];
@@ -114,7 +125,12 @@ function saveDB() {
             io.emit('new_message', { userName: currentUser.name, message }); // Notify all admins in real time
         });
 
-        socket.on('admin_message', ({ userName, text }) => {
+        socket.on('admin_message', async ({ userName, text }) => {
+            await db.read();
+            if (!db.data) db.data = { messages: {}, users: [] };
+            messages = db.data.messages;
+            allUsers = db.data.users;
+
             const message = { from: "Admin", text, time: Date.now(), sender: "admin" };
             if (!messages[userName]) messages[userName] = [];
             messages[userName].push(message);
@@ -126,11 +142,21 @@ function saveDB() {
             }
         });
 
-        socket.on('join_chat', (userName) => {
+        socket.on('join_chat', async (userName) => {
+            await db.read();
+            if (!db.data) db.data = { messages: {}, users: [] };
+            messages = db.data.messages;
+            allUsers = db.data.users;
+
             socket.emit('chat_history', messages[userName] || []);
         });
 
-        socket.on('disconnect', () => {
+        socket.on('disconnect', async () => {
+            await db.read();
+            if (!db.data) db.data = { messages: {}, users: [] };
+            messages = db.data.messages;
+            allUsers = db.data.users;
+
             if (currentUser) {
                 delete users[socket.id];
                 let existing = allUsers.find(u => u.name === currentUser.name);
@@ -154,24 +180,14 @@ function saveDB() {
 })();
 EOF
 
-# 7. Create package.json and set "type": "module"
-echo "Creating package.json..."
-cat << 'EOJ' > package.json
-{
-  "name": "chat-server",
-  "version": "1.0.0",
-  "main": "server.js",
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {}
-}
-EOJ
-
-# 8. Install Node.js modules (add lowdb for persistence!)
+# 7. Install Node.js modules (add lowdb for persistence!)
 echo "Installing Node.js modules..."
+npm init -y
 npm install express socket.io cors lowdb
+
+# 8. Make package.json a module
+echo "Setting package.json type to module..."
+sed -i '/"main":/a \  "type": "module",' package.json
 
 # 9. Start server with PM2
 echo "Starting server with PM2..."
@@ -190,7 +206,5 @@ echo "To view logs: pm2 logs chat-server"
 echo "To stop:     pm2 stop chat-server"
 echo "To restart:  pm2 restart chat-server"
 echo "You can safely close SSH, server will run in background!"
-echo ""
-echo "If you want to change code, go to ~/chat-server and edit server.js"
 echo ""
 echo "Admin will see ALL users (old/new), all messages, even after server restarts."
