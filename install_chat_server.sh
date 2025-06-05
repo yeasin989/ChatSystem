@@ -53,7 +53,21 @@ let messages = {}; // { userName: [ {from, text, time, sender} ] }
     db.data ||= { messages: {}, users: [] };
     messages = db.data.messages || {};
     allUsers = db.data.users || [];
+
+    // ====== REST OF SERVER CODE (everything using io, app, etc) =======
+    io.on('connection', (socket) => {
+        // ...all your socket handlers here...
+    });
+
+    app.get('/', (req, res) => {
+        res.send("Chat server running!");
+    });
+
+    http.listen(3000, () => {
+        console.log('Server running on port 3000');
+    });
 })();
+
 
 function saveDB() {
     db.data.messages = messages;
