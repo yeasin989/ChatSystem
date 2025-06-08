@@ -25,7 +25,7 @@ echo "Creating chat-server directory..."
 mkdir -p ~/chat-server
 cd ~/chat-server
 
-# 6. Write server.js with robust db.data handling
+# 6. Write server.js with robust real-time code!
 echo "Writing server.js..."
 cat << 'EOF' > server.js
 import express from 'express';
@@ -59,7 +59,6 @@ function saveDB() {
     db.write();
 }
 
-// --- Load from DB at startup ---
 (async () => {
     await db.read();
     if (!db.data) db.data = { messages: {}, users: [] };
@@ -90,7 +89,6 @@ function saveDB() {
             if (!messages[currentUser.name]) messages[currentUser.name] = [];
             saveDB();
 
-            // Send all user info to admin, and user chat history to user
             io.emit('update_clients', {
                 active: Object.values(users).map(u => u.name),
                 all: allUsers
@@ -121,8 +119,12 @@ function saveDB() {
             if (!messages[currentUser.name]) messages[currentUser.name] = [];
             messages[currentUser.name].push(message);
             saveDB();
+
+            // Notify this client
             io.to(socket.id).emit('chat_history', messages[currentUser.name]);
-            io.emit('new_message', { userName: currentUser.name, message }); // Notify all admins in real time
+
+            // Notify all admins (real-time)
+            io.emit('new_message', { userName: currentUser.name, message }); // <-- KEY FOR ADMIN REALTIME
         });
 
         socket.on('admin_message', async ({ userName, text }) => {
@@ -135,11 +137,15 @@ function saveDB() {
             if (!messages[userName]) messages[userName] = [];
             messages[userName].push(message);
             saveDB();
-            // Find current socket for that user, if online
+
+            // Notify this user (if online)
             let userSocket = Object.keys(users).find(id => users[id].name === userName);
             if (userSocket) {
                 io.to(userSocket).emit('chat_history', messages[userName]);
             }
+
+            // Notify all admins (real-time)
+            io.emit('new_message', { userName: userName, message }); // <-- KEY FOR ADMIN REALTIME
         });
 
         socket.on('join_chat', async (userName) => {
