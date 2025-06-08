@@ -1,32 +1,24 @@
 #!/bin/bash
-
 echo "==== Real-Time Chat Server Auto Installer ===="
 
-# 1. Update system
-echo "Updating system..."
+# 1. Update & install prerequisites
 sudo apt-get update
+sudo apt-get install -y curl git build-essential
 
-# 2. Install Node.js & git
-echo "Installing Node.js & git..."
+# 2. Install Node.js (v18) & PM2
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs git
-
-# 3. Install PM2
-echo "Installing PM2..."
+sudo apt-get install -y nodejs
 sudo npm install -g pm2
 
-# 4. Open port 3000
-echo "Opening port 3000..."
+# 3. Open port 3000
 sudo ufw allow 3000
 sudo ufw reload
 
-# 5. Create server directory
-echo "Setting up chat-server directory..."
+# 4. Setup server directory
 mkdir -p ~/chat-server
 cd ~/chat-server
 
-# 6. Write server.js
-echo "Writing server.js..."
+# 5. Write server.js
 cat << 'EOF' > server.js
 import express from 'express';
 import httpModule from 'http';
@@ -38,7 +30,12 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const db = new Low(new JSONFile(path.join(__dirname, 'db.json')));
+
+const dbFile = path.join(__dirname, 'db.json');
+const db = new Low(new JSONFile(dbFile));
+
+await db.read();
+if (!db.data) db.data = { messages: {}, users: [] };
 
 const app = express();
 app.use(cors());
@@ -47,85 +44,83 @@ app.use(express.json());
 const http = httpModule.createServer(app);
 const io = new Server(http, { cors: { origin: "*" } });
 
-let users = {};      // socketId -> {name}
-let messages = {};   // userName -> [message objects]
+let users = {};  // socketId => userName
+let messages = db.data.messages; // userName => [ { from, text, time, sender } ]
 
-async function saveDB() {
+function persist() {
   db.data.messages = messages;
-  await db.write();
+  db.write();
 }
 
-(async () => {
-  await db.read();
-  if (!db.data) db.data = { messages: {} };
-  messages = db.data.messages;
+// Helper: send updated client list
+function broadcastClients() {
+  const active = Object.values(users);
+  io.emit('update_clients', active);
+}
 
-  io.on('connection', socket => {
-    let currentUser = null;
+io.on('connection', socket => {
+  let me = null;
 
-    socket.on('register', async name => {
-      currentUser = name;
-      users[socket.id] = name;
-      if (!messages[name]) messages[name] = [];
-      // send full history on connect
-      socket.emit('chat_history', messages[name]);
-    });
-
-    socket.on('user_message', async text => {
-      if (!currentUser) return;
-      const msg = { from: currentUser, text, time: Date.now(), sender: 'user' };
-      messages[currentUser].push(msg);
-      await saveDB();
-      // update this user
-      socket.emit('chat_history', messages[currentUser]);
-      // notify admin(s)
-      io.emit('new_message', { userName: currentUser, message: msg });
-    });
-
-    socket.on('admin_message', async ({ userName, text }) => {
-      const msg = { from: 'Admin', text, time: Date.now(), sender: 'admin' };
-      if (!messages[userName]) messages[userName] = [];
-      messages[userName].push(msg);
-      await saveDB();
-      // send to that user
-      for (const [id, name] of Object.entries(users)) {
-        if (name === userName) {
-          io.to(id).emit('chat_history', messages[userName]);
-          break;
-        }
-      }
-      // notify all admins
-      io.emit('new_message', { userName, message: msg });
-    });
-
-    socket.on('disconnect', () => {
-      delete users[socket.id];
-    });
+  socket.on('register', userName => {
+    me = userName;
+    users[socket.id] = userName;
+    if (!messages[me]) messages[me] = [];
+    persist();
+    broadcastClients();
+    socket.emit('chat_history', messages[me]);
   });
 
-  app.get('/', (req, res) => res.send('Chat server running!'));
-  http.listen(3000, () => console.log('Server on port 3000'));
-})();
+  socket.on('get_clients', () => broadcastClients());
+
+  socket.on('join', userName => {
+    if (!messages[userName]) messages[userName] = [];
+    socket.emit('chat_history', messages[userName]);
+  });
+
+  socket.on('user_message', text => {
+    if (!me) return;
+    const msg = { from: me, text, time: Date.now(), sender: 'user' };
+    messages[me].push(msg);
+    persist();
+    // to user
+    socket.emit('chat_history', messages[me]);
+    // notify admin(s)
+    io.emit('message', { user: me, msg });
+  });
+
+  socket.on('admin_message', ({ user, text }) => {
+    const msg = { from: 'Admin', text, time: Date.now(), sender: 'admin' };
+    if (!messages[user]) messages[user] = [];
+    messages[user].push(msg);
+    persist();
+    // to that user
+    for (let [id,u] of Object.entries(users)) {
+      if (u === user) io.to(id).emit('chat_history', messages[user]);
+    }
+    // notify admin(s)
+    io.emit('message', { user, msg });
+  });
+
+  socket.on('disconnect', () => {
+    delete users[socket.id];
+    broadcastClients();
+  });
+});
+
+app.get('/', (req, res) => res.send('Chat server running!'));
+http.listen(3000, () => console.log('Server on port 3000'));
 EOF
 
-# 7. Install dependencies
-echo "Installing Node.js modules..."
+# 6. Init & install
 npm init -y
 npm install express socket.io cors lowdb
-
-# 8. Enable ES modules
-echo "Enabling ES modules..."
+# 7. Enable ESM
 sed -i '/"main":/a \  "type": "module",' package.json
 
-# 9. Start with PM2
-echo "Starting with PM2..."
+# 8. Start with PM2
 pm2 start server.js --name chat-server
 pm2 save
-
-# 10. Auto-start on reboot
-echo "Configuring PM2 startup..."
 pm2 startup | tail -2 | head -1 | bash
 
-echo ""
-echo "=== INSTALL COMPLETE ==="
-echo "Visit http://<YOUR_SERVER_IP>:3000 to test."
+echo "==== INSTALL COMPLETE! ===="
+echo "http://<YOUR_SERVER_IP>:3000"
