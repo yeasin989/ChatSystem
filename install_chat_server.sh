@@ -25,7 +25,7 @@ echo "Creating chat-server directory..."
 mkdir -p ~/chat-server
 cd ~/chat-server
 
-# 6. Write server.js with robust db.data handling
+# 6. Write server.js with REST API for delete client
 echo "Writing server.js..."
 cat << 'EOF' > server.js
 import express from 'express';
@@ -170,6 +170,37 @@ function saveDB() {
         });
     });
 
+    // --- DELETE API ---
+    app.delete('/api/delete_client/:name', async (req, res) => {
+        const name = req.params.name;
+        await db.read();
+        if (!db.data) db.data = { messages: {}, users: [] };
+
+        // Remove from users list
+        db.data.users = db.data.users.filter(u => u.name !== name);
+
+        // Remove messages
+        delete db.data.messages[name];
+
+        await db.write();
+
+        // Also disconnect user if online
+        for (const [socketId, user] of Object.entries(users)) {
+            if (user.name === name) {
+                io.sockets.sockets.get(socketId)?.disconnect(true);
+                delete users[socketId];
+            }
+        }
+
+        // Notify admins (refresh client list)
+        io.emit('update_clients', {
+            active: Object.values(users).map(u => u.name),
+            all: db.data.users
+        });
+
+        res.json({ success: true });
+    });
+
     app.get('/', (req, res) => {
         res.send("Chat server running!");
     });
@@ -180,7 +211,7 @@ function saveDB() {
 })();
 EOF
 
-# 7. Install Node.js modules (add lowdb for persistence!)
+# 7. Install Node.js modules (add lowdb for persistence! and dependencies)
 echo "Installing Node.js modules..."
 npm init -y
 npm install express socket.io cors lowdb
@@ -207,4 +238,4 @@ echo "To stop:     pm2 stop chat-server"
 echo "To restart:  pm2 restart chat-server"
 echo "You can safely close SSH, server will run in background!"
 echo ""
-echo "Admin will see ALL users (old/new), all messages, even after server restarts."
+echo "Admin can now delete any user chat (and messages) by using the Android admin app!"
